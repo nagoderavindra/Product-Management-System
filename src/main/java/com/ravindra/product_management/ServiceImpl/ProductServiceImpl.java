@@ -17,15 +17,13 @@ import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 
-import java.util.List;
 @Slf4j
 @Service
 public class ProductServiceImpl implements ProductService {
-
-
-
 
     private final CategoryRepository categoryRepository;
     private final ProductRepository productRepository;
@@ -41,15 +39,19 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     public ProductDto createProduct(ProductDto productDto) {
+
         log.info("Creating product: {}", productDto.getProductName());
 
         Category category = categoryRepository.findById(productDto.getCategoryId())
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Category not found with id: " + productDto.getCategoryId()));
 
-        User user = userRepository.findById(productDto.getUserId())
-                .orElseThrow(() -> new ResourceNotFoundException(
-                        "User not found with id: " + productDto.getUserId()));
+        Long userId = getLoggedInUserId();
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() ->
+                        new ResourceNotFoundException(
+                                "User not found with id: " + userId));
 
         Product product = new Product();
 
@@ -62,7 +64,8 @@ public class ProductServiceImpl implements ProductService {
 
         Product saved = productRepository.save(product);
 
-log.info("Product is created successgully with id:{}",saved.getProductId());
+        log.info("Product is created successfully with id: {}", saved.getProductId());
+
         return mapToDto(saved);
     }
 
@@ -80,25 +83,20 @@ log.info("Product is created successgully with id:{}",saved.getProductId());
             dto.setCategoryId(product.getCategory().getCatagaryId());
         }
 
-        if (product.getUser() != null) {
-            dto.setUserId(product.getUser().getUserId());
-        }
+        // userId intentionally not returned in response
 
         return dto;
-
-}
-    @Override
-    public Page<ProductDto> getAllProduct(int page, int size) {
-       Pageable pageble =  PageRequest.of(page,size);
-       Page<Product> product =  productRepository.findAll(pageble);
-       return product.map(this::mapToDto);
     }
 
-   // @Override
-   // public List<ProductDto> getAllProduct() {
-     //   return productRepository.findAll()
-            //    .stream().map(this::mapToDto).toList();
-   // }
+    @Override
+    public Page<ProductDto> getAllProduct(int page, int size) {
+
+        Pageable pageable = PageRequest.of(page, size);
+
+        Page<Product> products = productRepository.findAll(pageable);
+
+        return products.map(this::mapToDto);
+    }
 
     @Override
     @Cacheable(value = "products", key = "#id")
@@ -117,47 +115,68 @@ log.info("Product is created successgully with id:{}",saved.getProductId());
         return mapToDto(product);
     }
 
+    @Override
+    @CachePut(value = "products", key = "#id")
+    public ProductDto updateProduct(Long id, ProductDto productDto) {
 
+        log.info("Updating product with id: {}", id);
 
-        @Override
-        @CachePut(value = "products", key = "#id")
-        public ProductDto updateProduct(Long id, ProductDto productDto) {
+        Product product = productRepository.findById(id)
+                .orElseThrow(() ->
+                        new ResourceNotFoundException("Product not found"));
 
-         log.info("updating product with id{}",id);
+        Long loggedInUserId = getLoggedInUserId();
 
-            Product product = productRepository.findById(id)
-                    .orElseThrow(() -> new ResourceNotFoundException("Product not found"));
-
-            Category category = categoryRepository.findById(productDto.getCategoryId())
-                    .orElseThrow(() -> new ResourceNotFoundException("Category not found"));
-
-            User user = userRepository.findById(productDto.getUserId())
-                    .orElseThrow(() -> new ResourceNotFoundException("User not found"));
-
-            product.setProductName(productDto.getProductName());
-            product.setDescription(productDto.getDescription());
-            product.setPrice(productDto.getPrice());
-            product.setQuantity(productDto.getQuantity());
-            product.setCategory(category);
-            product.setUser(user);
-            log.info("updating product successfully with id{}",id);
-            return mapToDto(productRepository.save(product));
-
+        if (!product.getUser().getUserId().equals(loggedInUserId)) {
+            throw new RuntimeException(
+                    "You are not authorized to update this product");
         }
 
+        Category category = categoryRepository.findById(productDto.getCategoryId())
+                .orElseThrow(() ->
+                        new ResourceNotFoundException("Category not found"));
+
+        product.setProductName(productDto.getProductName());
+        product.setDescription(productDto.getDescription());
+        product.setPrice(productDto.getPrice());
+        product.setQuantity(productDto.getQuantity());
+        product.setCategory(category);
+
+        log.info("Updating product successfully with id: {}", id);
+
+        return mapToDto(productRepository.save(product));
+    }
 
     @Override
     @CacheEvict(value = "products", key = "#id")
     public void deleteProduct(Long id) {
 
         log.info("Deleting product with id: {}", id);
-              Product product = productRepository.findById(id)
-                      .orElseThrow(() -> {
-                          log.error("Product not found with id: {}", id);
-                          return new ResourceNotFoundException("product not found");
-                      });
 
-               productRepository.delete(product);
+        Product product = productRepository.findById(id)
+                .orElseThrow(() -> {
+                    log.error("Product not found with id: {}", id);
+                    return new ResourceNotFoundException("Product not found");
+                });
+
+        Long loggedInUserId = getLoggedInUserId();
+
+        if (!product.getUser().getUserId().equals(loggedInUserId)) {
+            throw new RuntimeException(
+                    "You are not authorized to delete this product");
+        }
+
+        productRepository.delete(product);
+
         log.info("Product deleted successfully with id: {}", id);
+    }
+
+    private Long getLoggedInUserId() {
+
+        UsernamePasswordAuthenticationToken authentication =
+                (UsernamePasswordAuthenticationToken)
+                        SecurityContextHolder.getContext().getAuthentication();
+
+        return (Long) authentication.getDetails();
     }
 }
